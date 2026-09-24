@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI-Enabled Phishing Analyzer</title>
+  <meta name="description" content="Exploring human vs. LLM-written phishing email and a browser-only TF-IDF + Logistic Regression classifier.">
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #1e293b;
+      --line: #334155;
+      --line-2: #475569;
+      --text: #e5e7eb;
+      --muted: #94a3b8;
+      --faint: #64748b;
+      --accent: #2563eb;
+      /* one color per group, used everywhere */
+      --hp: #f87171;  /* human phishing */
+      --lp: #fb923c;  /* LLM phishing */
+      --hl: #2dd4bf;  /* human legit */
+      --ll: #60a5fa;  /* LLM legit */
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+      font-size: 16px;
+      line-height: 1.5;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .wrap { max-width: 1200px; margin: 0 auto; padding: 0 32px; }
+
+    header { border-bottom: 1px solid var(--line); }
+    header .wrap { padding-top: 24px; padding-bottom: 20px; }
+    header h1 { margin: 0 0 4px; font-size: 28px; }
+    header p { margin: 0; color: var(--muted); }
+
+    main.wrap { padding-top: 28px; padding-bottom: 40px; }
+    h2 { margin: 0; font-size: 19px; }
+    .sub { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+    .section-title { margin: 32px 0 14px; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 20px;
+    }
+
+    /* Load error */
+    .load-error {
+      display: none; margin-bottom: 20px; padding: 14px 18px; border-radius: 8px;
+      background: rgba(248,113,113,.12); border: 1px solid var(--hp); color: var(--text);
+    }
+    .load-error code { color: var(--hp); }
+
+    /* Stats */
+    .stats-top { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 16px; }
+    .stats-groups { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+    .stat-label { color: var(--muted); font-size: 14px; display: flex; align-items: center; gap: 8px; }
+    .stat-value { font-size: 32px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
+    .stat-split { font-size: 15px; color: var(--muted); margin-top: 2px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; }
+    .group-card { border-top: 3px solid var(--c); }
+
+    /* Filters */
+    .filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 28px 0 16px; }
+    .filters span { color: var(--muted); font-size: 14px; margin-right: 4px; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 7px 14px; border-radius: 999px;
+      border: 1px solid var(--line-2); background: transparent; color: var(--text);
+      font: inherit; font-size: 14px; cursor: pointer;
+    }
+    .chip[aria-pressed="false"] { opacity: .4; }
+    .chip:hover { border-color: var(--muted); }
+
+    /* Chart grid */
+    .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
+    .chart { margin-top: 18px; display: grid; gap: 10px; }
+    .bar-row { display: grid; grid-template-columns: 130px 1fr 72px; align-items: center; gap: 12px; font-size: 14px; }
+    .bar-row .name { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .bar-track { position: relative; height: 18px; background: rgba(148,163,184,.10); border-radius: 4px; overflow: hidden; }
+    .bar { height: 100%; border-radius: 4px; background: var(--c); transition: width .35s ease; }
+    .bar-row .val { text-align: right; font-variant-numeric: tabular-nums; }
+    .bar-row .val small { color: var(--faint); font-size: 12px; }
+    #chAcc .bar-row { grid-template-columns: 130px 1fr 100px; }
+    .chance::after {
+      content: ""; position: absolute; top: -2px; bottom: -2px; left: 50%;
+      border-left: 2px dashed var(--text); opacity: .6;
+    }
+    .note { margin-top: 14px; font-size: 13px; color: var(--muted); border-left: 2px solid var(--line-2); padding-left: 10px; }
+    .note b { color: var(--text); font-weight: 600; }
+
+    .metric { margin-top: 14px; }
+    .metric-name { font-size: 14px; margin-bottom: 6px; }
+    .metric .bar-row { grid-template-columns: 110px 1fr 56px; font-size: 13px; }
+    .metric .bar-track { height: 12px; }
+
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 16px; }
+    .col-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+    .two-col .chart { margin-top: 0; gap: 6px; }
+    .two-col .bar-row { grid-template-columns: 100px 1fr 40px; font-size: 13px; }
+    .two-col .bar-track { height: 12px; }
+
+    .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 16px; }
+    .tab {
+      padding: 5px 12px; border-radius: 6px; border: 1px solid var(--line-2);
+      background: transparent; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer;
+    }
+    .tab.active { color: var(--text); border-color: var(--c); background: rgba(148,163,184,.08); }
+
+    select {
+      margin-top: 14px; padding: 7px 10px; border-radius: 6px; font: inherit; font-size: 14px;
+      background: var(--bg); color: var(--text); border: 1px solid var(--line-2);
+    }
+
+    .empty { color: var(--faint); font-size: 14px; padding: 20px 0; }
+
+    /* Analyzer */
+    .analyzer-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 20px; margin-top: 16px; }
+    textarea {
+      width: 100%; min-height: 300px; resize: vertical; padding: 14px;
+      border-radius: 8px; border: 1px solid var(--line-2); background: var(--bg);
+      color: var(--text); font: inherit; font-size: 15px;
+    }
+    textarea:focus, button:focus-visible, .chip:focus-visible, .tab:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .btn-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+    .btn {
+      padding: 11px 20px; border: none; border-radius: 8px; background: var(--accent);
+      color: white; font: inherit; font-weight: 600; cursor: pointer;
+    }
+    .btn:hover { background: #1d4ed8; }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+    .btn.ghost { background: transparent; border: 1px solid var(--line-2); color: var(--muted); }
+    .btn.ghost:hover { color: var(--text); }
+    .model-status { margin-top: 12px; font-size: 12px; color: var(--faint); }
+    .model-status.ok::before { content: "● "; color: var(--hl); }
+    .model-status.bad::before { content: "● "; color: var(--hp); }
+
+    .result { padding: 20px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); }
+    .verdict { display: inline-block; padding: 6px 14px; border-radius: 999px; font-weight: 700; font-size: 18px; }
+    .verdict.phish { background: rgba(248,113,113,.15); color: var(--hp); }
+    .verdict.legit { background: rgba(45,212,191,.15); color: var(--hl); }
+    .verdict.none { background: rgba(148,163,184,.12); color: var(--muted); font-weight: 600; font-size: 16px; }
+    .conf { margin-top: 14px; }
+    .conf-head { display: flex; justify-content: space-between; font-size: 14px; color: var(--muted); }
+    .conf-head b { color: var(--text); font-size: 16px; }
+    .conf .bar-track { height: 10px; margin-top: 6px; }
+    .conf-note { font-size: 12px; color: var(--faint); margin-top: 6px; }
+
+    .result h3 { margin: 20px 0 8px; font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); font-weight: 600; }
+    .drivers { display: grid; gap: 6px; }
+    .driver { display: grid; grid-template-columns: 130px 1fr 1fr 48px; align-items: center; gap: 8px; font-size: 13px; }
+    .driver .term { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .driver .half { height: 10px; display: flex; }
+    .driver .half.left { justify-content: flex-end; border-right: 1px solid var(--line-2); }
+    .driver .half span { height: 100%; border-radius: 3px; background: var(--c); }
+    .driver .v { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+    .drivers-legend { display: grid; grid-template-columns: 130px 1fr 1fr 48px; gap: 8px; font-size: 11px; color: var(--faint); }
+    .drivers-legend span:nth-child(2) { text-align: right; padding-right: 6px; }
+    .drivers-legend span:nth-child(3) { padding-left: 6px; }
+
+    .signals { margin-top: 4px; }
+    .signal { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 9px 0; border-bottom: 1px solid var(--panel); font-size: 14px; }
+    .signal:last-child { border-bottom: none; }
+    .signal .s-val { font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+    .signal .s-ref { grid-column: 1 / -1; color: var(--faint); font-size: 12px; }
+    .flag { color: var(--hp); }
+    .ok { color: var(--muted); }
+
+    /* Disclaimer */
+    .disclaimer {
+      margin-top: 24px; padding: 16px 18px; border-left: 3px solid var(--lp);
+      background: var(--panel); color: var(--muted); font-size: 14px; border-radius: 0 8px 8px 0;
+    }
+    .disclaimer strong { color: var(--text); }
+    .disclaimer ul { margin: 8px 0 0; padding-left: 18px; }
+    .disclaimer li { margin: 4px 0; }
+
+    footer { color: var(--faint); font-size: 13px; margin-top: 24px; }
+    footer a { color: var(--muted); }
+
+    @media (max-width: 960px) {
+      .stats-groups { grid-template-columns: repeat(2, 1fr); }
+      .grid, .analyzer-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 600px) {
+      .wrap { padding: 0 16px; }
+      .stats-top, .stats-groups, .two-col { grid-template-columns: 1fr; }
+      .bar-row { grid-template-columns: 100px 1fr 60px; }
+      .driver, .drivers-legend { grid-template-columns: 96px 1fr 1fr 40px; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <h1>AI-Enabled Phishing Analyzer</h1>
+    <p>GBA 6740 Group 2 • Human vs. LLM-written phishing &amp; legitimate email</p>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <div class="load-error" id="loadError">
+    <b>Model files didn't load.</b> Keep <code>model.js</code>, <code>stats.js</code>, and <code>predict.js</code>
+    in the same folder as <code>index.html</code>, or re-run <code>python train.py --out site</code>.
+  </div>
+
+  <!-- Dataset overview -->
+  <section class="stats-top" id="statsTop"></section>
+  <section class="stats-groups" id="groupCards"></section>
+
+  <!-- Filters -->
+  <div class="filters" id="filters" role="group" aria-label="Filter groups">
+    <span>Show groups:</span>
+  </div>
+
+  <!-- Charts -->
+  <section class="grid">
+
+    <div class="card">
+      <h2>Email length</h2>
+      <p class="sub">Median word count (subject + body)</p>
+      <div class="chart" id="chLength"></div>
+      <div class="note">Human legitimate emails are mailing-list threads with quoted replies, so they run about <b>2× longer</b> than the other groups.</div>
+    </div>
+
+    <div class="card">
+      <h2>URLs by group</h2>
+      <p class="sub">Average links per email (http links + bare domains)</p>
+      <div class="chart" id="chUrls"></div>
+      <div class="note">Most links were <b>removed from the human phishing text</b> in the source data, so its count is understated.</div>
+    </div>
+
+    <div class="card">
+      <h2>Urgency language</h2>
+      <p class="sub">% of emails containing the selected term</p>
+      <select id="urgSelect" aria-label="Urgency term"></select>
+      <div class="chart" id="chUrgency"></div>
+    </div>
+
+    <div class="card">
+      <h2>Common words</h2>
+      <p class="sub">Top terms by % of emails containing them (stop words removed)</p>
+      <div class="tabs" id="wordTabs"></div>
+      <div class="chart" id="chWords"></div>
+      <div class="note" id="wordNote"></div>
+    </div>
+
+    <div class="card">
+      <h2>Human vs. LLM comparison</h2>
+      <p class="sub">Writing signals across all four groups</p>
+      <div id="chCompare"></div>
+    </div>
+
+    <div class="card">
+      <h2>Model accuracy by group</h2>
+      <p class="sub">TF-IDF + Logistic Regression, 5-fold cross-validation</p>
+      <div class="chart" id="chAcc"></div>
+      <div class="note" id="accNote"></div>
+    </div>
+
+    <div class="card">
+      <h2>Does it generalize?</h2>
+      <p class="sub">Train on one source, test on the other (balanced accuracy)</p>
+      <div class="chart" id="chCross"></div>
+      <div class="note" id="crossNote"></div>
+    </div>
+
+    <div class="card">
+      <h2>What the model learned</h2>
+      <p class="sub">Terms with the largest weights toward each class</p>
+      <div class="two-col">
+        <div>
+          <div class="col-title"><span class="dot" style="background:var(--hp)"></span>Toward phishing</div>
+          <div class="chart" id="chTermsP"></div>
+        </div>
+        <div>
+          <div class="col-title"><span class="dot" style="background:var(--hl)"></span>Toward legitimate</div>
+          <div class="chart" id="chTermsL"></div>
+        </div>
+      </div>
+      <div class="note">Several top terms (<b>monkey</b>, <b>sarah</b>, <b>coordinator</b>, <b>dear mr</b>, <b>wrote</b>) come from how each collection was built, not from phishing itself.</div>
+    </div>
+
+  </section>
+
+  <!-- Analyzer -->
+  <div class="section-title">Try it</div>
+  <section class="card">
+    <h2>Analyze an email</h2>
+    <p class="sub">Runs entirely in your browser. Nothing you paste is sent anywhere.</p>
+
+    <div class="analyzer-grid">
+      <div>
+        <textarea id="emailInput" placeholder="Paste an email here..." aria-label="Email text"></textarea>
+        <div class="btn-row">
+          <button class="btn" id="analyzeBtn">Analyze email</button>
+          <button class="btn ghost" id="samplePhish">Sample: phishing</button>
+          <button class="btn ghost" id="sampleLegit">Sample: legitimate</button>
+          <button class="btn ghost" id="clearBtn">Clear</button>
+        </div>
+        <div class="model-status" id="modelStatus">Loading model…</div>
+      </div>
+
+      <div class="result" id="result" aria-live="polite">
+        <span class="verdict none">No analysis yet</span>
+        <p class="sub" style="margin-top:12px">Paste an email and click Analyze. The verdict, confidence, and the signals behind it will appear here.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Disclaimer -->
+  <div class="disclaimer">
+    <strong>Class proof of concept, not a security tool.</strong>
+    <ul>
+      <li>The dataset has both human-written and LLM-generated phishing and legitimate email, but a model trained on it can still learn dataset- or source-specific writing patterns instead of general phishing behavior. The cross-source test above shows it does.</li>
+      <li>The groups come from different eras (human legitimate email from 2007–2008 mailing lists, human phishing from 2019–2022), which may inflate accuracy.</li>
+      <li>Duplicate emails were removed before training (4,000 rows → 3,200 distinct emails).</li>
+      <li>Predictions reflect patterns in this dataset only and should not be treated as a definitive security verdict.</li>
+    </ul>
+  </div>
+
+  <footer>
+    Data: <a href="https://www.kaggle.com/datasets/francescogreco97/human-llm-generated-phishing-legitimate-emails" target="_blank" rel="noopener">Human-LLM Generated Phishing-Legitimate Emails (Kaggle)</a>
+  </footer>
+
+</main>
+
+<!-- Generated by train.py; predict.js mirrors its feature code. -->
+<script src="model.js"></script>
+<script src="stats.js"></script>
+<script src="predict.js"></script>
+
+<script>
+(function () {
+  "use strict";
+  const $ = id => document.getElementById(id);
+
+  if (typeof MODEL === "undefined" || typeof STATS === "undefined" || typeof predictEmail !== "function") {
+    $("loadError").style.display = "block";
+    $("modelStatus").textContent = "Model not loaded.";
+    $("modelStatus").className = "model-status bad";
+    $("analyzeBtn").disabled = true;
+    return;
+  }
+
+  /* ---------- Config ---------- */
+  const GROUPS = [
+    { id: "hp", name: "Human phishing", color: "var(--hp)", phish: true },
+    { id: "lp", name: "LLM phishing",   color: "var(--lp)", phish: true },
+    { id: "hl", name: "Human legit",    color: "var(--hl)", phish: false },
+    { id: "ll", name: "LLM legit",      color: "var(--ll)", phish: false },
+  ];
+  const IDS = GROUPS.map(g => g.id);
+
+  const WORD_NOTES = {
+    hp: "<b>“monkey”</b> comes from the recipient address (jose@monkey.org), found in about a third of these emails. It's a dataset artifact the model can memorize.",
+    lp: "Template phrasing (“I hope this email finds you well”, “regards”) dominates. That's an LLM style signal, not a phishing signal.",
+    hl: "Mailing-list vocabulary (“wrote”, “listinfo”, “mailman”) shows up because these come from 2007–2008 developer lists.",
+    ll: "Every LLM legit email opens with “Dear”, and many use the same lure-style topics as phishing, so this is a hard class to separate.",
+  };
+
+  const NUMERIC_LABELS = {
+    log_words: "Email length", log_urls: "URL count", urgency_terms: "Urgency words",
+    cta_terms: "Calls to action", caps_ratio: "Capitalization", punct_per_100w: "! and ? marks",
+  };
+
+  /* ---------- Helpers ---------- */
+  const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const num = n => Number(n).toLocaleString("en-US");
+  const fmt = n => Number.isInteger(n) ? String(n) : n.toFixed(n < 10 ? 2 : 1).replace(/\.?0+$/, "");
+  const sum = (obj, ids) => ids.reduce((a, id) => a + obj[id], 0);
+  const avg = (obj, ids) => sum(obj, ids) / ids.length;
+  const PH = GROUPS.filter(g => g.phish).map(g => g.id);
+  const LG = GROUPS.filter(g => !g.phish).map(g => g.id);
+
+  function barRow(label, value, max, color, display, extraClass = "") {
+    const pct = Math.max(0, Math.min(100, (value / max) * 100));
+    return `<div class="bar-row">
+      <span class="name" title="${esc(label)}">${esc(label)}</span>
+      <div class="bar-track ${extraClass}"><div class="bar" style="--c:${color};width:${pct}%"></div></div>
+      <span class="val">${display ?? fmt(value)}</span>
+    </div>`;
+  }
+
+  const active = new Set(IDS);
+  const shown = () => GROUPS.filter(g => active.has(g.id));
+
+  function groupBars(values, { max, suffix = "", display } = {}) {
+    const gs = shown();
+    if (!gs.length) return `<div class="empty">No groups selected.</div>`;
+    const m = max ?? Math.max(...gs.map(g => values[g.id])) * 1.1;
+    return gs.map(g => barRow(g.name, values[g.id], m, g.color,
+      display ? display(g.id) : fmt(values[g.id]) + suffix)).join("");
+  }
+
+  /* ---------- Overview ---------- */
+  function renderOverview() {
+    const { rows, distinct } = STATS.counts;
+    const human = ["hp", "hl"], llm = ["lp", "ll"];
+    $("statsTop").innerHTML = `
+      <div class="card">
+        <div class="stat-label">Total emails</div>
+        <div class="stat-value">${num(sum(rows, IDS))}</div>
+        <div class="stat-split">${num(sum(distinct, IDS))} distinct after removing duplicates</div>
+      </div>
+      <div class="card">
+        <div class="stat-label">Phishing vs. legitimate</div>
+        <div class="stat-value">${num(sum(distinct, PH))} / ${num(sum(distinct, LG))}</div>
+        <div class="stat-split">Distinct emails</div>
+      </div>
+      <div class="card">
+        <div class="stat-label">Human vs. LLM-written</div>
+        <div class="stat-value">${num(sum(distinct, human))} / ${num(sum(distinct, llm))}</div>
+        <div class="stat-split">Distinct emails</div>
+      </div>`;
+    $("groupCards").innerHTML = GROUPS.map(g => `
+      <div class="card group-card" style="--c:${g.color}">
+        <div class="stat-label"><span class="dot" style="background:${g.color}"></span>${g.name}</div>
+        <div class="stat-value">${num(distinct[g.id])}</div>
+        <div class="stat-split">distinct of ${num(rows[g.id])} rows</div>
+      </div>`).join("");
+  }
+
+  function renderFilters() {
+    GROUPS.forEach(g => {
+      const b = document.createElement("button");
+      b.className = "chip";
+      b.setAttribute("aria-pressed", "true");
+      b.innerHTML = `<span class="dot" style="background:${g.color}"></span>${g.name}`;
+      b.onclick = () => {
+        active.has(g.id) ? active.delete(g.id) : active.add(g.id);
+        b.setAttribute("aria-pressed", String(active.has(g.id)));
+        renderCharts();
+      };
+      $("filters").appendChild(b);
+    });
+  }
+
+  /* ---------- Charts ---------- */
+  const URGENCY_OPTIONS = { "any urgency term": STATS.urgAny, ...STATS.urgency };
+
+  function renderUrgency() {
+    $("chUrgency").innerHTML = groupBars(URGENCY_OPTIONS[$("urgSelect").value], { max: 60, suffix: "%" });
+  }
+
+  let wordGroup = "hp";
+  function renderWords() {
+    const g = GROUPS.find(x => x.id === wordGroup);
+    $("wordTabs").innerHTML = GROUPS.map(x =>
+      `<button class="tab ${x.id === wordGroup ? "active" : ""}" style="--c:${x.color}" data-g="${x.id}">${x.name}</button>`
+    ).join("");
+    $("wordTabs").querySelectorAll(".tab").forEach(t => t.onclick = () => { wordGroup = t.dataset.g; renderWords(); });
+    $("chWords").innerHTML = STATS.words[wordGroup].slice(0, 8).map(([w, p]) => barRow(w, p, 100, g.color, p + "%")).join("");
+    $("wordNote").innerHTML = WORD_NOTES[wordGroup];
+  }
+
+  const COMPARE = [
+    { name: "Any urgency term (%)", v: STATS.urgAny, max: 60,  f: v => v + "%" },
+    { name: "Call to action (%)",   v: STATS.ctaAny, max: 60,  f: v => v + "%" },
+    { name: "Contains a link (%)",  v: STATS.urlAny, max: 100, f: v => v + "%" },
+    { name: "Capital letters (%)",  v: STATS.caps,   max: 15,  f: v => v + "%" },
+    { name: "“!” per email",        v: STATS.excl,   max: 3,   f: v => v.toFixed(2) },
+  ];
+
+  function renderCompare() {
+    const gs = shown();
+    if (!gs.length) { $("chCompare").innerHTML = `<div class="empty">No groups selected.</div>`; return; }
+    $("chCompare").innerHTML = COMPARE.map(m => `
+      <div class="metric">
+        <div class="metric-name">${m.name}</div>
+        ${gs.map(g => barRow(g.name, m.v[g.id], m.max, g.color, m.f(m.v[g.id]))).join("")}
+      </div>`).join("");
+  }
+
+  function renderAccuracy() {
+    const cv = STATS.accuracy.cv, ho = STATS.accuracy.heldOut;
+    $("chAcc").innerHTML = groupBars(
+      Object.fromEntries(IDS.map(id => [id, cv.perGroup[id].mean])),
+      { max: 100, display: id => `${cv.perGroup[id].mean}% <small>±${cv.perGroup[id].sd}</small>` });
+    $("accNote").innerHTML =
+      `<b>${cv.overall.mean}% ± ${cv.overall.sd}</b> overall across 5 folds of ${num(sum(STATS.counts.distinct, IDS))} distinct emails. ` +
+      `The model on this page scored ${ho.overall}% on its own held-out set of ${ho.testSize}.`;
+  }
+
+  function renderCross() {
+    const c = STATS.accuracy.crossSource;
+    const rows = [
+      ["Human → LLM", c.human_to_llm, "var(--lp)"],
+      ["LLM → Human", c.llm_to_human, "var(--hp)"],
+    ];
+    $("chCross").innerHTML = rows.map(([label, r, color]) =>
+      barRow(label, r.balancedAccuracy, 100, color, r.balancedAccuracy + "%", "chance")).join("");
+    const h = c.human_to_llm, l = c.llm_to_human;
+    $("crossNote").innerHTML =
+      `Dashed line = <b>50%, a coin flip</b>. Trained on human email, the model calls ${h.predictedPhishing}% of LLM emails phishing ` +
+      `(catches ${h.phishingRecall}% of LLM phishing but also flags ${fmt(100 - h.legitRecall)}% of LLM legit). ` +
+      `Trained on LLM email, it calls most human email legitimate (catches only ${l.phishingRecall}% of human phishing). ` +
+      `<b>The 98.8% comes from learning each source's style, not phishing in general.</b>`;
+  }
+
+  function renderTerms() {
+    const P = STATS.topTerms.phishing.slice(0, 8), L = STATS.topTerms.legit.slice(0, 8);
+    const max = Math.max(...P.map(t => Math.abs(t[1])), ...L.map(t => Math.abs(t[1])));
+    $("chTermsP").innerHTML = P.map(([t, w]) => barRow(t, Math.abs(w), max, "var(--hp)", w.toFixed(1))).join("");
+    $("chTermsL").innerHTML = L.map(([t, w]) => barRow(t, Math.abs(w), max, "var(--hl)", w.toFixed(1))).join("");
+  }
+
+  function renderCharts() {
+    $("chLength").innerHTML = groupBars(STATS.medianWords, { max: 220 });
+    $("chUrls").innerHTML   = groupBars(STATS.urls, { max: 7 });
+    renderUrgency();
+    renderCompare();
+    renderAccuracy();
+  }
+
+  /* ---------- Analyzer ---------- */
+  const REF = {
+    words: { p: avg(STATS.medianWords, PH), l: avg(STATS.medianWords, LG) },
+    urls:  { p: avg(STATS.urls, PH),        l: avg(STATS.urls, LG) },
+    urg:   { p: avg(STATS.urgAny, PH),      l: avg(STATS.urgAny, LG) },
+    cta:   { p: avg(STATS.ctaAny, PH),      l: avg(STATS.ctaAny, LG) },
+    caps:  { p: avg(STATS.caps, PH),        l: avg(STATS.caps, LG) },
+  };
+  const r1 = n => Math.round(n * 10) / 10;
+
+  function signalRow(name, value, flagged, ref) {
+    return `<div class="signal">
+      <span>${name}</span>
+      <span class="s-val ${flagged ? "flag" : "ok"}">${value}</span>
+      <span class="s-ref">${ref}</span>
+    </div>`;
+  }
+
+  function driverRows(contributions) {
+    const items = contributions.slice(0, 8);
+    const max = Math.max(...items.map(c => Math.abs(c.value)), 1e-9);
+    return items.map(c => {
+      const w = (Math.abs(c.value) / max) * 100;
+      const label = c.term.startsWith("[") ? NUMERIC_LABELS[c.term.slice(1, -1)] || c.term : `“${c.term}”`;
+      const toward = c.value > 0;
+      return `<div class="driver">
+        <span class="term" title="${esc(label)}">${esc(label)}</span>
+        <div class="half left">${toward ? "" : `<span style="--c:var(--hl);width:${w}%"></span>`}</div>
+        <div class="half">${toward ? `<span style="--c:var(--hp);width:${w}%"></span>` : ""}</div>
+        <span class="v">${c.value > 0 ? "+" : ""}${c.value.toFixed(2)}</span>
+      </div>`;
+    }).join("");
+  }
+
+  function analyze() {
+    const raw = $("emailInput").value;
+    if (!raw.trim()) {
+      $("result").innerHTML = `<span class="verdict none">Nothing to analyze</span><p class="sub" style="margin-top:12px">Paste an email first.</p>`;
+      return;
+    }
+    const r = predictEmail(raw);
+    const f = r.features;
+    const conf = (r.isPhishing ? r.p : 1 - r.p) * 100;
+    const known = r.contributions.filter(c => !c.term.startsWith("[")).length;
+
+    $("result").innerHTML = `
+      <span class="verdict ${r.isPhishing ? "phish" : "legit"}">${r.isPhishing ? "Probably phishing" : "Probably legitimate"}</span>
+      <div class="conf">
+        <div class="conf-head"><span>Confidence</span><b>${conf >= 99 ? "&gt;99" : Math.round(conf)}%</b></div>
+        <div class="bar-track"><div class="bar" style="--c:${r.isPhishing ? "var(--hp)" : "var(--hl)"};width:${conf.toFixed(1)}%"></div></div>
+        <div class="conf-note">Model probability of phishing: ${(r.p * 100).toFixed(1)}%. ${known} of the words or phrases matched the model's vocabulary.</div>
+      </div>
+
+      <h3>What drove this result</h3>
+      <div class="drivers-legend"><span></span><span>← legitimate</span><span>phishing →</span><span></span></div>
+      <div class="drivers">${driverRows(r.contributions)}</div>
+
+      <h3>Email signals</h3>
+      <div class="signals">
+        ${signalRow("Urgency language", f.urgencyHits.length ? esc(f.urgencyHits.slice(0, 3).join(", ")) : "none", f.urgencyHits.length > 0,
+          `Found in ${r1(REF.urg.p)}% of phishing vs. ${r1(REF.urg.l)}% of legit emails`)}
+        ${signalRow("Call to action", f.ctaHits.length ? esc(f.ctaHits.slice(0, 2).join(", ")) : "none", f.ctaHits.length > 0,
+          `Found in ${r1(REF.cta.p)}% of phishing vs. ${r1(REF.cta.l)}% of legit emails`)}
+        ${signalRow("URL count", f.urls, f.urls > 0 && f.urls <= 3,
+          `Avg ${REF.urls.p.toFixed(1)} in phishing vs. ${REF.urls.l.toFixed(1)} in legit (legit skewed by mailing-list footers)`)}
+        ${signalRow("Length", `${num(f.words)} words · ${num(f.chars)} chars`, f.words < 150,
+          `Median ~${Math.round(REF.words.p)} words in phishing vs. ~${Math.round(REF.words.l)} in legit`)}
+        ${signalRow("Capitalization", f.capsPct.toFixed(1) + "%", f.capsPct > 15,
+          `Avg ${r1(REF.caps.p)}% phishing vs. ${r1(REF.caps.l)}% legit (weak signal in this dataset)`)}
+        ${signalRow("! and ? marks", f.punct, false, "Weak signal in this dataset")}
+      </div>`;
+  }
+
+  const SAMPLE_PHISH = `Subject: Action required: your account will be suspended
+
+Dear Customer,
+
+We detected unauthorized activity on your account. To avoid suspension, you must verify your account immediately. Click here to confirm your details within 24 hours:
+
+https://secure-account-review.com/login
+
+Thank you,
+Account Security Team`;
+
+  const SAMPLE_LEGIT = `Subject: Re: notes from Tuesday's meeting
+
+Hi all,
+
+Thanks for joining on Tuesday. I've attached the slides and the action items we agreed on. Maria will send the updated budget by Friday, and I'll book the room for our next check-in.
+
+Let me know if I missed anything.
+
+Best,
+Daniel`;
+
+  /* ---------- Init ---------- */
+  $("urgSelect").innerHTML = Object.keys(URGENCY_OPTIONS).map(t => `<option>${esc(t)}</option>`).join("");
+  $("urgSelect").onchange = renderUrgency;
+  $("analyzeBtn").onclick = analyze;
+  $("samplePhish").onclick = () => { $("emailInput").value = SAMPLE_PHISH; analyze(); };
+  $("sampleLegit").onclick = () => { $("emailInput").value = SAMPLE_LEGIT; analyze(); };
+  $("clearBtn").onclick = () => { $("emailInput").value = ""; $("emailInput").focus(); };
+  $("emailInput").addEventListener("keydown", e => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) analyze();
+  });
+
+  renderOverview();
+  renderFilters();
+  renderWords();
+  renderCharts();
+  renderCross();
+  renderTerms();
+
+  const ok = checkParity();
+  $("modelStatus").className = "model-status " + (ok ? "ok" : "bad");
+  $("modelStatus").textContent = ok
+    ? `Model loaded: ${num(MODEL.vocab.length)} terms, matches the Python model (Ctrl+Enter to analyze)`
+    : "Model check failed: predict.js and train.py are out of sync. Re-run train.py.";
+})();
+</script>
+</body>
+</html>
